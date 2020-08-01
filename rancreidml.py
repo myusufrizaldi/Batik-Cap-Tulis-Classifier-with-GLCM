@@ -14,9 +14,10 @@ import timeit
 #### Class
 
 class GlcmKnnClassifier:
-    def __init__(self, model_name, k_neighbors=3, glcm_components=['contrast', 'correlation', 'energy', 'homogeneity', 'ASM', 'dissimilarity']):
+    def __init__(self, model_name, k_neighbors=3, k_folds=5, glcm_components=['contrast', 'correlation', 'energy', 'homogeneity', 'ASM', 'dissimilarity']):
         self.model_name                 = model_name
         self.k_neighbors                = k_neighbors
+        self.k_folds                    = k_folds
         self.perfect_test_overlap       = k_neighbors + (k_neighbors // 2)
         self.all_glcm_components        = ['contrast', 'correlation', 'energy', 'homogeneity', 'ASM', 'dissimilarity']
         self.all_glcm_components_length = len(self.all_glcm_components)
@@ -35,6 +36,32 @@ class GlcmKnnClassifier:
         self.validation_data = []
         self.training_sample = []
         self.testing_sample  = []
+
+        self.class_training_data_start_ids = []
+        self.splitted_training_data = []
+
+    def split_training_data(self):
+        self.splitted_training_data = []
+
+        class_training_data_start_ids_length = len(self.class_training_data_start_ids)
+        for class_id in range(class_training_data_start_ids_length):
+            if(class_id == class_training_data_start_ids_length - 1):
+                end_constraint = len(self.training_data)
+            else:
+                end_constraint = self.class_training_data_start_ids[class_id + 1]
+
+            class_training_data = self.training_data[self.class_training_data_start_ids[class_id]:end_constraint]
+
+            splitted_class_training_data = []
+            class_training_data_length = len(class_training_data)
+            length_per_fold = int(class_training_data_length / self.k_folds)
+            for slice_start_id in range(0, class_training_data_length, length_per_fold):
+                if(slice_start_id == class_training_data_length - 1):
+                    splitted_class_training_data.append(class_training_data[slice_start_id:])
+                else:
+                    splitted_class_training_data.append(class_training_data[slice_start_id:slice_start_id + length_per_fold])
+
+            self.splitted_training_data.append(splitted_class_training_data)
         
     def load_data(self, training_path='training/', validation_path='validation/', data_path='data/', img_type='*.jpg', is_skip=False):
         self.initialize()
@@ -49,23 +76,35 @@ class GlcmKnnClassifier:
             training_data_str   = open(training_data_path, 'r').read().split('\n')
             validation_data_str = open(validation_data_path, 'r').read().split('\n')
             
+            training_img_id = 0
+            training_img_class = ''
             for row in training_data_str:
                 row = row[1:len(row) - 1].split(', ')
                 row[1:] =  [float(value) for value in row[1:]]
                 self.training_data.append(tuple(row))
+
+                if(not training_img_class == row[0]):
+                    self.class_training_data_start_ids.append(training_img_id)
+                    training_img_class = row[0]
+                training_img_id += 1
             
             for row in validation_data_str:
                 row = row[1:len(row) - 1].split(', ')
                 row[1:] =  [float(value) for value in row[1:]]
                 self.validation_data.append(tuple(row))
         else:           
+            training_img_id = 0
             for class_name in self.class_names:
+                self.class_training_data_start_ids.append(training_img_id)
                 training_img_paths = glob.glob(training_path + class_name + '/' + img_type)
+
                 for training_img_path in training_img_paths:
                     training_img = iglcm.load_preprocessed_img(training_img_path)
                     training_img_features = iglcm.get_img_features(training_img, self.all_glcm_components)
                     temp_row = [class_name] + training_img_features
                     self.training_data.append(tuple(temp_row))
+                    
+                    training_img_id += 1
                     
                 validation_img_paths = glob.glob(validation_path + class_name + '/' + img_type)
                 for validation_img_path in validation_img_paths:
@@ -89,6 +128,8 @@ class GlcmKnnClassifier:
                     file_writer.write(str(self.validation_data[row_id]).replace('\'', '') + '\n')
                 file_writer.write(str(self.validation_data[row_id]).replace('\'', ''))
                 
+        self.split_training_data()
+
         training_data_length   = len(self.training_data)
         validation_data_length = len(self.validation_data)
         class_names_length     = len(self.class_names)
@@ -134,14 +175,13 @@ class GlcmKnnClassifier:
         
         return img_class_name
     
-    def deep_train(self, training_rate=0.8, epochs=20):
+    def deep_train(self, training_rate=0.8, epochs=10, is_accuracy_oriented=False):
         print('Deep training has been started. It will take a lot of time, so take your time :)')       
         
-        best_validation_accuracy, best_validation_loss = 0, 100
+        best_validation_accuracy = 0
         best_validation_accuracy_training_sample = []
-        best_validation_loss_training_sample     = []
+        best_validation_accuracy_testing_sample = []
         best_validation_accuracy_glcm_components = []
-        best_validation_loss_glcm_components     = []
         
         subsets_length_constraint = 2 ** self.all_glcm_components_length
         for subset_num in range(1, subsets_length_constraint):
@@ -157,49 +197,68 @@ class GlcmKnnClassifier:
             
             print('Training ' + str(subset_num) + '/' + str(subsets_length_constraint - 1))
             print('Training on GLCM components: ' + str(temp_glcm_components))
-            temp_validation_accuracy, temp_validation_loss = self.train(training_rate, epochs)
+            temp_validation_accuracy, temp_validation_loss = self.train(training_rate, epochs, is_accuracy_oriented)
             
             if(temp_validation_accuracy > best_validation_accuracy):
                 best_validation_accuracy = temp_validation_accuracy
                 best_validation_accuracy_glcm_components = temp_glcm_components
                 best_validation_accuracy_training_sample = self.training_sample
-            if(temp_validation_loss < best_validation_loss):
-                best_validation_loss = temp_validation_loss
-                best_validation_loss_glcm_components = temp_glcm_components
-                best_validation_loss_training_sample = self.training_sample
+                best_validation_accuracy_testing_sample  = self.testing_sample
                 
         print('\n')
         print('Deep training completed.\n')
         print('Deep training report:')
         print('Best val_acc                      : ' + str(best_validation_accuracy))
         print('GLCM components for best val_acc  : ' + str(best_validation_accuracy_glcm_components))
-        print('Best val_loss                     : ' + str(best_validation_loss))
-        print('GLCM components for best val_loss : ' + str(best_validation_loss_glcm_components))
         
         self.training_sample = best_validation_accuracy_training_sample
+        self.testing_sample  = best_validation_accuracy_testing_sample
         self.set_glcm_components(temp_glcm_components)
-        print('\nYour model has been update with best accuracy model.')
+
+        if(is_accuracy_oriented):
+            print('\nYour model has been updated with best accuracy model.')
+        else:
+            print('\nYour model has been updated with best stablility model.')
         
-        return best_validation_accuracy_glcm_components, best_validation_loss_glcm_components
+        return best_validation_accuracy_glcm_components
         
-    def train(self, training_rate=0.8, epochs=20):
+    def train(self, training_rate=0.8, epochs=20, is_accuracy_oriented=False):
         print('Training...')
-        self.training_sample = []
-        self.testing_sample  = []
+        training_sample_history = []
+        testing_sample_history   = []
+        self.training_sample    = []
+        self.testing_sample     = []
         
+        max_validation_accuracy = -1
+        min_validation_loss     = 100
+        max_validation_accuracy_sample_id = -1
         validation_accuracy, validation_loss = 0, 0
         
         perfect_test_count = 0
         for epoch in range(epochs):
             print('    Epoch ' + str(epoch + 1) + '/' + str(epochs))
             epoch_start_time = timeit.default_timer()
-            
-            for row in self.training_data:                
-                random_splitter = random.uniform(0, 1)
-                if(random_splitter <= training_rate):
-                    self.training_sample.append(row)
-                else:
-                    self.testing_sample.append(row)
+
+            training_k_folds = int(training_rate * self.k_folds)
+            if(training_k_folds == 0):
+                training_k_folds = 1
+            testing_k_folds  = self.k_folds - training_k_folds
+
+            available_folds = [i for i in range(self.k_folds)]
+            splitted_training_data_length = len(self.splitted_training_data)
+            for i in range(testing_k_folds):
+                random_fold_id = random.choice(available_folds)
+                available_folds.remove(random_fold_id)
+
+                for class_id in range(splitted_training_data_length):
+                    self.testing_sample += self.splitted_training_data[class_id][random_fold_id]
+
+            for fold_id in available_folds:
+                for class_id in range(splitted_training_data_length):
+                    self.training_sample += self.splitted_training_data[class_id][fold_id]
+
+            training_sample_history.append(self.training_sample)
+            testing_sample_history.append(self.testing_sample)
                     
             testing_accuracy, testing_loss = self.test()
             validation_accuracy, validation_loss = self.validate()
@@ -214,18 +273,31 @@ class GlcmKnnClassifier:
             
             print('    --> ' + 'time: ' + epoch_time + ' - test_loss: ' + testing_loss_str + ' - test_acc: ' + testing_accuracy_str + ' - val_loss: ' + validation_loss_str + ' - val_acc: ' + validation_accuracy_str)        
         
-            if(testing_accuracy == 1.0):
+            if(not is_accuracy_oriented and testing_accuracy == 1.0):
                 perfect_test_count += 1
                 if(perfect_test_count == self.perfect_test_overlap):
                     print('Epochs end, the perfect test overlap has been reached.')
                     break
+            else:
+                if(validation_accuracy > max_validation_accuracy):
+                    max_validation_accuracy = validation_accuracy
+                    min_validation_loss     = validation_loss
+                    max_validation_accuracy_sample_id = epoch
                     
-            self.validation_accuracy = validation_accuracy
-            self.validation_loss     = validation_loss
-        
-        print('--> Done, loss: ' + validation_loss_str + ' - acc: ' + validation_accuracy_str + '\n')
-        
-        return validation_accuracy, validation_loss
+        self.validation_accuracy = validation_accuracy
+        self.validation_loss     = validation_loss
+
+        if(is_accuracy_oriented):
+            validation_accuracy_str  = '{:.4f}'.format(max_validation_accuracy)
+            validation_loss_str      = '{:.4f}'.format(min_validation_loss)
+
+            self.training_sample = training_sample_history[max_validation_accuracy_sample_id]
+            self.testing_sample  = testing_sample_history[max_validation_accuracy_sample_id]
+            print('--> Done, loss: ' + validation_loss_str + ' - acc: ' + validation_accuracy_str + '\n')
+            return max_validation_accuracy, min_validation_loss
+        else:
+            print('--> Done, loss: ' + validation_loss_str + ' - acc: ' + validation_accuracy_str + '\n')
+            return validation_accuracy, validation_loss
         
     def test(self):
         total_correct_answer = 0
