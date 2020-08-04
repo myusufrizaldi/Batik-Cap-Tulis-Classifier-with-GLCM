@@ -4,6 +4,7 @@ import dec2bin as dtb
 import imageglcm as iglcm
 
 import glob
+import json
 import math
 import numpy as np
 import os
@@ -339,6 +340,12 @@ class GlcmKnnClassifier:
         
         return validation_accuracy, validation_loss
 
+    def predict(self, img):
+        img_features = iglcm.get_img_features(img)
+        img_class_name = self.get_img_features_class(img_features)
+
+        return img_class_name
+
     def set_properties(self, model_name, k_neighbors, glcm_components):
         self.model_name = model_name
         self.k_neighbors = k_neighbors
@@ -353,3 +360,75 @@ class GlcmKnnClassifier:
     def set_glcm_components(self, glcm_components):
         self.glcm_components    = glcm_components
         self.glcm_component_ids = [self.all_glcm_components.index(glcm_component) for glcm_component in glcm_components]
+
+    def get_sample_as_str(self, sample):
+        sample_str = ''
+        sample_last_id = len(sample) - 1
+        for row_id in range(sample_last_id):
+            sample_str += str(sample[row_id]).replace('\'', '') + '\n'
+        sample_str += str(sample[sample_last_id]).replace('\'', '')
+
+        return sample_str
+
+    def get_sample_as_list(self, sample_str):
+        sample_list = []
+        sample_str_list = sample_str.split('\n')
+        for row in sample_str_list:
+            row = row[1:len(row) - 1].split(', ')
+            row[1:] = [float(value) for value in row[1:]]
+            sample_list.append(tuple(row))
+
+        return sample_list
+
+    def save(self):
+        model_json = {}
+        model_json['model_name'] = self.model_name
+        model_json['k_neighbors'] = self.k_neighbors
+        model_json['k_folds'] = self.k_folds
+        model_json['perfect_test_overlap'] = self.perfect_test_overlap
+        model_json['all_glcm_components'] = self.all_glcm_components
+        model_json['glcm_components'] = self.glcm_components
+        model_json['glcm_component_ids'] = [self.all_glcm_components.index(glcm_component) for glcm_component in self.glcm_components]
+        model_json['validation_loss'] = self.validation_loss
+        model_json['validation_accuracy'] = self.validation_accuracy
+        model_json['class_names'] = self.class_names
+        model_json['training_data'] = self.get_sample_as_str(self.training_data)
+        model_json['validation_data'] = self.get_sample_as_str(self.validation_data)
+        model_json['training_sample'] = self.get_sample_as_str(self.training_sample)
+        model_json['testing_sample'] = self.get_sample_as_str(self.testing_sample)
+        model_json['class_training_data_start_ids'] = self.class_training_data_start_ids
+        
+
+        model_json_path = self.model_name + '.json'
+        with open(model_json_path, 'w+') as file_writer:
+            json.dump(model_json, file_writer)
+
+        print('\nYour model has been saved.\n')
+
+    def load(self):
+        model_json_path = self.model_name + '.json'
+        with open(model_json_path) as file_reader:
+            model_data = json.load(file_reader)
+            
+            self.model_name = model_data['model_name']
+            self.k_neighbors = model_data['k_neighbors']
+            self.k_folds = model_data['k_folds']
+            self.perfect_test_overlap = model_data['perfect_test_overlap']
+            self.all_glcm_components = model_data['all_glcm_components']
+            self.all_glcm_components_length = len(self.all_glcm_components)
+            self.glcm_components = model_data['glcm_components']
+            self.glcm_components_length = len(self.glcm_components)
+            self.glcm_component_ids = model_data['glcm_component_ids']
+
+            self.validation_loss = model_data['validation_loss']
+            self.validation_accuracy = model_data['validation_accuracy']
+            self.class_names = model_data['class_names']
+            self.training_data = self.get_sample_as_list(model_data['training_data'])
+            self.validation_data = self.get_sample_as_list(model_data['validation_data'])
+            self.training_sample = self.get_sample_as_list(model_data['training_sample'])
+            self.testing_sample = self.get_sample_as_list(model_data['testing_sample'])
+            self.class_training_data_start_ids = model_data['class_training_data_start_ids']
+            self.split_training_data()
+
+        print('\nYour model has been loaded with acc: ' + str(self.validation_accuracy) + ', all set, you\'re ready to predict!\n')
+        
