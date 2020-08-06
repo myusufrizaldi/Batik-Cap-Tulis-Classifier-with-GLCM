@@ -8,6 +8,7 @@ import json
 import math
 import numpy as np
 import os
+import pandas as pd
 import random
 import statistics
 import timeit
@@ -29,8 +30,18 @@ class GlcmKnnClassifier:
         self.initialize()
         
     def initialize(self):
-        self.validation_loss     = 0
-        self.validation_accuracy = 0
+        self.validation_loss      = 0
+        self.validation_accuracy  = 0
+        self.validation_precision = 0
+        self.validation_recall    = 0
+        self.validation_f1_score  = 0
+
+        self.validation_precisions = []
+        self.validation_recalls    = []
+        self.validation_f1_scores  = []
+
+        self.validation_metrics             = pd.DataFrame(columns=['class', 'precision', 'recall', 'f1-score'])
+        self.consecutive_validation_metrics = {}
         
         self.class_names     = []
         self.training_data   = []
@@ -136,6 +147,7 @@ class GlcmKnnClassifier:
         class_names_length     = len(self.class_names)
                 
         print('--> Done (' + str(training_data_length) + ' training images and ' + str(validation_data_length) + ' validation images, into ' + str(class_names_length) + ' class).\n')
+        print('')
         
     def get_euclidean_distance(self, img_features_1, img_features_2):
         euclidean_distance = 0.0
@@ -176,8 +188,32 @@ class GlcmKnnClassifier:
         
         return img_class_name
     
-    def deep_train(self, training_rate=0.8, epochs=10, is_accuracy_oriented=False):
-        print('Deep training has been started. It will take a lot of time, so take your time :)')       
+    def deep_train(self, training_rate_list=[0.8], iterations_list=[5], epochs_list=[10], is_accuracy_oriented=False, is_full_epochs=True, is_skip_epoch_validation=False):
+        print('Deep training has been started. It will take a lot of time, so take your time:)\n')
+        print('')
+
+        self.consecutive_validation_metrics = {}
+
+        training_length = len(epochs_list)
+        for training_id in range(training_length):
+            print('Training ' + str(training_id + 1) + '/' + str(training_length) + ' with ' + str(training_rate_list[training_id]) + ' training rate, ' + str(iterations_list[training_id]) + ' iterations, and ' + str(epochs_list[training_id]) + ' epochs')
+            
+            training_name = str(training_rate_list[training_id]) + 'tr_' + str(iterations_list[training_id]) + 'iters_' + str(epochs_list[training_id]) + 'eps'
+            self.consecutive_validation_metrics[training_name] = []
+            for iteration in range(iterations_list[training_id]):
+                print('Iteration ' + str(iteration + 1) + '/' + str(iterations_list[training_id]))
+                self.train(training_rate_list[training_id], epochs_list[training_id], is_accuracy_oriented, is_full_epochs, is_skip_epoch_validation)
+
+                self.consecutive_validation_metrics[training_name].append(self.validation_metrics)
+                self.save_validation_metrics(training_rate_list[training_id], epochs_list[training_id], iteration + 1)
+            
+            print('')
+
+        self.save_consecutive_validation_metrics()
+
+    def wide_train(self, training_rate=0.8, epochs=10, is_accuracy_oriented=False):
+        print('Wide training has been started. It will take a lot of time, so take your time :)\n')
+        print('\n')       
         
         best_validation_accuracy = 0
         best_validation_accuracy_training_sample = []
@@ -207,14 +243,15 @@ class GlcmKnnClassifier:
                 best_validation_accuracy_testing_sample  = self.testing_sample
                 
         print('\n')
-        print('Deep training completed.\n')
-        print('Deep training report:')
+        print('Wide training completed.\n')
+        print('Wide training report:')
         print('Best val_acc                      : ' + str(best_validation_accuracy))
         print('GLCM components for best val_acc  : ' + str(best_validation_accuracy_glcm_components))
         
         self.training_sample = best_validation_accuracy_training_sample
         self.testing_sample  = best_validation_accuracy_testing_sample
         self.set_glcm_components(temp_glcm_components)
+        self.save_validation_metrics(training_rate, epochs, 'best')
 
         if(is_accuracy_oriented):
             print('\nYour model has been updated with best accuracy model.')
@@ -223,7 +260,7 @@ class GlcmKnnClassifier:
         
         return best_validation_accuracy_glcm_components
         
-    def train(self, training_rate=0.8, epochs=20, is_accuracy_oriented=False):
+    def train(self, training_rate=0.8, epochs=20, is_accuracy_oriented=False, is_full_epochs=False, is_skip_epoch_validation=False):
         print('Training...')
         training_sample_history = []
         testing_sample_history   = []
@@ -262,31 +299,42 @@ class GlcmKnnClassifier:
             testing_sample_history.append(self.testing_sample)
                     
             testing_accuracy, testing_loss = self.test()
-            validation_accuracy, validation_loss = self.validate()
+            
             
             epoch_end_time = timeit.default_timer()
             
             epoch_time               = '{:.4f}'.format(round(epoch_end_time - epoch_start_time, 4)) + ' s'
             testing_accuracy_str     = '{:.4f}'.format(testing_accuracy)
             testing_loss_str         = '{:.4f}'.format(testing_loss)
-            validation_accuracy_str  = '{:.4f}'.format(validation_accuracy)
-            validation_loss_str      = '{:.4f}'.format(validation_loss)
-            
-            print('    --> ' + 'time: ' + epoch_time + ' - test_loss: ' + testing_loss_str + ' - test_acc: ' + testing_accuracy_str + ' - val_loss: ' + validation_loss_str + ' - val_acc: ' + validation_accuracy_str)        
-        
+
+            if(not is_skip_epoch_validation):
+                self.validate()
+                validation_accuracy_str  = '{:.4f}'.format(self.validation_accuracy)
+                validation_loss_str      = '{:.4f}'.format(self.validation_loss)
+
+                print('    --> ' + 'time: ' + epoch_time + ' - test_loss: ' + testing_loss_str + ' - test_acc: ' + testing_accuracy_str + ' - val_loss: ' + validation_loss_str + ' - val_acc: ' + validation_accuracy_str)        
+            else:
+                print('    --> ' + 'time: ' + epoch_time + ' - test_loss: ' + testing_loss_str + ' - test_acc: ' + testing_accuracy_str)   
+
             if(not is_accuracy_oriented and testing_accuracy == 1.0):
                 perfect_test_count += 1
-                if(perfect_test_count == self.perfect_test_overlap):
+                if(perfect_test_count == self.perfect_test_overlap and not is_full_epochs):
                     print('Epochs end, the perfect test overlap has been reached.')
                     break
-            else:
+            elif(is_accuracy_oriented):
                 if(validation_accuracy > max_validation_accuracy):
                     max_validation_accuracy = validation_accuracy
                     min_validation_loss     = validation_loss
                     max_validation_accuracy_sample_id = epoch
-                    
-        self.validation_accuracy = validation_accuracy
-        self.validation_loss     = validation_loss
+
+        if(is_skip_epoch_validation):
+            self.validate()
+        else:
+            self.validation_accuracy = validation_accuracy
+            self.validation_loss     = validation_loss
+
+        validation_accuracy_str  = '{:.4f}'.format(self.validation_accuracy)
+        validation_loss_str      = '{:.4f}'.format(self.validation_loss)
 
         if(is_accuracy_oriented):
             validation_accuracy_str  = '{:.4f}'.format(max_validation_accuracy)
@@ -295,9 +343,11 @@ class GlcmKnnClassifier:
             self.training_sample = training_sample_history[max_validation_accuracy_sample_id]
             self.testing_sample  = testing_sample_history[max_validation_accuracy_sample_id]
             print('--> Done, loss: ' + validation_loss_str + ' - acc: ' + validation_accuracy_str + '\n')
+            self.print_validation_metrics()
             return max_validation_accuracy, min_validation_loss
         else:
             print('--> Done, loss: ' + validation_loss_str + ' - acc: ' + validation_accuracy_str + '\n')
+            self.print_validation_metrics()
             return validation_accuracy, validation_loss
         
     def test(self):
@@ -321,9 +371,10 @@ class GlcmKnnClassifier:
         return testing_accuracy, testing_loss
     
     def validate(self):
-        total_correct_answer = 0
-        total_guess = 0
-        
+        class_names_length = len(self.class_names)
+        true_guess     = [0 for i in range(class_names_length)]
+        false_guess    = [0 for i in range(class_names_length)]
+
         for row in self.validation_data:
             expected_validation_img_class_name = row[0]
             validation_img_features = row[1:]
@@ -331,20 +382,75 @@ class GlcmKnnClassifier:
             validation_img_class_name = self.get_img_features_class(validation_img_features)
             
             if(expected_validation_img_class_name == validation_img_class_name):
-                total_correct_answer += 1
-                
-            total_guess += 1
-            
-        validation_accuracy = round(total_correct_answer / total_guess, 4)
-        validation_loss = 1 - validation_accuracy
+                true_guess[self.class_names.index(validation_img_class_name)] += 1
+            else:
+                false_guess[self.class_names.index(validation_img_class_name)] += 1            
         
-        return validation_accuracy, validation_loss
+        self.validation_precisions = []
+        self.validation_recalls    = []
+        self.validation_f1_scores  = []
+        
+        total_correct_answer = 0
+        total_guess = 0
+        for class_id in range(class_names_length):
+            total_correct_answer += true_guess[class_id]
+            total_guess += true_guess[class_id] + false_guess[class_id]
+
+            class_precision = round(true_guess[class_id] / (true_guess[class_id] + sum(false_guess[0:class_id] + false_guess[class_id+1:])), 4)
+            class_recall    = round(true_guess[class_id] / (true_guess[class_id] + false_guess[class_id]), 4)
+            class_f1_score  = round((2 * class_precision * class_recall) / (class_precision + class_recall), 4)
+
+            self.validation_precisions.append(class_precision)
+            self.validation_recalls.append(class_recall)
+            self.validation_f1_scores.append(class_f1_score)
+
+        self.validation_accuracy  = round(total_correct_answer / total_guess, 4)
+        self.validation_loss      = 1 - self.validation_accuracy
+        self.validation_precision = round(sum(self.validation_precisions) / len(self.validation_precisions), 4)
+        self.validation_recall    = round(sum(self.validation_recalls) / len(self.validation_recalls), 4)
+        self.validation_f1_score  = round(sum(self.validation_f1_scores) / len(self.validation_f1_scores), 4)
+
+        self.validation_metrics = pd.DataFrame(columns=['class', 'precision', 'recall', 'f1-score'])
+        for class_id in range(len(self.class_names)):
+            self.validation_metrics.loc[len(self.validation_metrics)] = [self.class_names[class_id], self.validation_precisions[class_id], self.validation_recalls[class_id], self.validation_f1_scores[class_id]]
+        self.validation_metrics.loc[len(self.validation_metrics)] = ['[avg]', self.validation_precision, self.validation_recall, self.validation_f1_score]
+
+        return self.validation_accuracy, self.validation_loss, self.validation_metrics
 
     def predict(self, img):
         img_features = iglcm.get_img_features(img)
         img_class_name = self.get_img_features_class(img_features)
 
         return img_class_name
+
+    def print_validation_metrics(self):
+        print(self.validation_metrics)
+        print()
+
+    def save_validation_metrics(self, training_rate, epochs, iteration):
+        validation_metrics_path = 'validation_metrics/'
+        if(not os.path.exists(validation_metrics_path)):
+            os.mkdir(validation_metrics_path)
+        validation_metrics_path = validation_metrics_path + self.model_name + '_' + str(training_rate) + 'tr_' + str(epochs) + 'eps_' + str(iteration) + '.csv'
+        self.validation_metrics.to_csv(validation_metrics_path)
+
+    def save_consecutive_validation_metrics(self):
+        validation_metrics_path = 'validation_metrics/'
+        excel_writer = pd.ExcelWriter(validation_metrics_path + self.model_name + '_deep_training_metrics.xlsx')
+        
+        for training_name in self.consecutive_validation_metrics:
+            temp_sheet = pd.DataFrame(columns=['class', 'precision', 'recall', 'f1-score'])
+
+            for iteration_metrics in self.consecutive_validation_metrics[training_name]:
+                for row_id, row in iteration_metrics.iloc[:].iterrows():
+                    temp_sheet.loc[len(temp_sheet)] = row
+                temp_sheet.loc[len(temp_sheet)] = ['', '', '', '']
+            
+            temp_sheet = temp_sheet.head(-1)
+            temp_sheet.to_excel(excel_writer, training_name)
+
+        excel_writer.save()
+        print('Your consecutive validation metrics has been saved.\n')
 
     def set_properties(self, model_name, k_neighbors, glcm_components):
         self.model_name = model_name
@@ -403,7 +509,7 @@ class GlcmKnnClassifier:
         with open(model_json_path, 'w+') as file_writer:
             json.dump(model_json, file_writer)
 
-        print('\nYour model has been saved.\n')
+        print('Your model has been saved.\n')
 
     def load(self):
         model_json_path = self.model_name + '.json'
@@ -430,5 +536,5 @@ class GlcmKnnClassifier:
             self.class_training_data_start_ids = model_data['class_training_data_start_ids']
             self.split_training_data()
 
-        print('\nYour model has been loaded with acc: ' + str(self.validation_accuracy) + ', all set, you\'re ready to predict!\n')
+        print('Your model has been loaded with acc: ' + str(self.validation_accuracy) + ', all set, you\'re ready to predict!\n')
         
